@@ -1,0 +1,310 @@
+
+# Documentación de la API - Gijón ProManager
+
+Este documento define la API REST que el frontend de Gijón ProManager necesita para funcionar. Sirve como un contrato entre el equipo de frontend y el equipo de backend.
+
+## 1. Autenticación
+
+La API utiliza **JSON Web Tokens (JWT)** para la autenticación.
+
+1.  El usuario envía sus credenciales al endpoint `POST /api/auth/login`.
+2.  Si las credenciales son válidas, el servidor responde con un token JWT.
+3.  El cliente (frontend) debe almacenar este token de forma segura (ej. en `localStorage`).
+4.  Para todas las peticiones a endpoints protegidos, el cliente debe incluir el token en la cabecera `Authorization` con el esquema `Bearer`.
+
+**Ejemplo de Cabecera:**
+`Authorization: Bearer <tu_token_jwt>`
+
+## 2. Modelos de Datos
+
+Estos son los principales modelos de datos que la API debe gestionar.
+
+### User
+```json
+{
+  "id": "string",         // UUID
+  "name": "string",
+  "email": "string",      // Único
+  "role": "admin",        // Enum: 'admin'
+  "businessName": "string",
+  "plan": "string"        // Enum: 'Gratis', 'Básico', 'Pro'
+}
+```
+
+### Client
+```json
+{
+  "id": "string",         // UUID
+  "name": "string",
+  "email": "string",
+  "phone": "string",
+  "createdAt": "string",  // Formato ISO 8601 (YYYY-MM-DD)
+  "tags": ["string"],     // Array de strings (segmentos)
+  "notes": "string"
+}
+```
+
+### Appointment
+```json
+{
+  "id": "string",         // UUID
+  "clientId": "string",   // ID del cliente asociado
+  "clientName": "string",
+  "service": "string",
+  "start": "string",      // Formato ISO 8601 (fecha y hora)
+  "end": "string",        // Formato ISO 8601 (calculado automáticamente)
+  "estimatedDuration": "number", // Duración en minutos
+  "status": "string",     // Enum: 'pending_confirmation', 'confirmation_sent', 'confirmed', 'cancelled'
+  "confirmationToken": "string" // Opcional, generado para la confirmación
+}
+```
+
+### Campaign
+```json
+{
+  "id": "string",         // UUID
+  "name": "string",
+  "targetSegment": "string",
+  "channel": "string",    // Enum: 'email', 'sms'
+  "message": "string",
+  "sentDate": "string",   // Formato ISO 8601
+  "status": "string",     // Enum: 'sent'
+  "stats": {
+    "sent": "number",
+    "opened": "number",
+    "clicks": "number"
+  }
+}
+```
+
+### ReminderRule
+```json
+{
+  "id": "string",              // UUID
+  "serviceName": "string",
+  "frequencyDays": "number",
+  "messageTemplate": "string"
+}
+```
+
+---
+
+## 3. Endpoints de la API
+
+### Auth
+
+#### `POST /api/auth/login`
+Autentica a un usuario y devuelve un token JWT.
+-   **Auth**: No requerida.
+-   **Request Body**:
+    ```json
+    {
+      "email": "admin@gijonpro.com",
+      "password": "password"
+    }
+    ```
+-   **Success Response (200 OK)**:
+    ```json
+    {
+      "token": "ey...",
+      "user": { /* Objeto User completo */ }
+    }
+    ```
+
+---
+
+### Clients
+
+#### `GET /api/clients`
+Obtiene una lista paginada de clientes.
+-   **Auth**: Requerida.
+-   **Query Parameters**:
+    -   `page` (number, opcional, default: 1): Número de página.
+    -   `limit` (number, opcional, default: 5): Clientes por página.
+    -   `search` (string, opcional): Término de búsqueda para nombre, email o etiqueta.
+-   **Success Response (200 OK)**:
+    ```json
+    {
+      "data": [ /* Array de objetos Client */ ],
+      "total": 23 // Total de clientes que coinciden con la búsqueda
+    }
+    ```
+
+#### `GET /api/clients/:id`
+Obtiene un cliente específico por su ID.
+-   **Auth**: Requerida.
+-   **Success Response (200 OK)**: Objeto `Client` completo.
+
+#### `POST /api/clients`
+Crea un nuevo cliente.
+-   **Auth**: Requerida.
+-   **Request Body**: `Omit<Client, 'id' | 'createdAt'>`
+-   **Success Response (201 Created)**: Objeto `Client` recién creado.
+
+---
+
+### Appointments
+
+#### `GET /api/appointments`
+Obtiene **todas** las citas. Usado por el calendario.
+-   **Auth**: Requerida.
+-   **Success Response (200 OK)**: `[Appointment]`
+
+#### `GET /api/clients/:clientId/appointments`
+Obtiene todas las citas de un cliente específico.
+-   **Auth**: Requerida.
+-   **Success Response (200 OK)**: `[Appointment]`
+
+#### `POST /api/appointments`
+Crea una nueva cita.
+-   **Auth**: Requerida.
+-   **Request Body**: `Omit<Appointment, 'id' | 'end' | 'status' | 'confirmationToken'>`. El backend debe calcular `end`, y establecer `status` a `pending_confirmation`.
+-   **Success Response (201 Created)**: Objeto `Appointment` recién creado.
+
+#### `PUT /api/appointments/:id`
+Actualiza una cita existente.
+-   **Auth**: Requerida.
+-   **Request Body**: `Partial<Omit<Appointment, 'id'>>`. Si se actualiza `start` o `estimatedDuration`, el backend debe recalcular `end`.
+-   **Success Response (200 OK)**: Objeto `Appointment` actualizado.
+
+#### `DELETE /api/appointments/:id`
+Elimina una cita.
+-   **Auth**: Requerida.
+-   **Success Response (204 No Content)**.
+
+#### `POST /api/appointments/trigger-reminders`
+Simula un cron job para enviar recordatorios de confirmación.
+-   **Auth**: Requerida.
+-   **Descripción**: Busca citas con `status: 'pending_confirmation'` que ocurran en las próximas 48 horas, genera un `confirmationToken`, cambia el estado a `confirmation_sent` y simula el envío de un SMS/Email.
+-   **Success Response (200 OK)**:
+    ```json
+    {
+      "remindersSent": 3 // Número de recordatorios enviados
+    }
+    ```
+
+#### `POST /api/appointments/confirm/:token`
+Confirma una cita usando un token.
+-   **Auth**: No requerida (endpoint público).
+-   **Descripción**: Busca una cita por su `confirmationToken` y cambia su estado a `confirmed`.
+-   **Success Response (200 OK)**: Objeto `Appointment` confirmado.
+
+---
+
+### Marketing (Campaigns, Segments, Rules)
+
+#### `GET /api/campaigns`
+Obtiene una lista paginada de campañas.
+-   **Auth**: Requerida.
+-   **Query Parameters**:
+    -   `page`, `limit`, `search` (similar a `GET /api/clients`).
+-   **Success Response (200 OK)**:
+    ```json
+    {
+      "data": [ /* Array de objetos Campaign */ ],
+      "total": 15
+    }
+    ```
+
+#### `POST /api/campaigns`
+Crea y "envía" una nueva campaña.
+-   **Auth**: Requerida.
+-   **Request Body**: `Omit<Campaign, 'id' | 'sentDate' | 'status' | 'stats'>`. El backend debe calcular las estadísticas y establecer las fechas.
+-   **Success Response (201 Created)**: Objeto `Campaign` recién creado.
+
+#### `GET /api/segments`
+Obtiene la lista de todos los segmentos de clientes.
+-   **Auth**: Requerida.
+-   **Success Response (200 OK)**: `["vip", "nuevo", "frecuente"]`
+
+#### `POST /api/segments`
+Crea un nuevo segmento.
+-   **Auth**: Requerida.
+-   **Request Body**: `{ "name": "string" }`
+-   **Success Response (201 Created)**: `{ "name": "nuevo_segmento" }`
+
+#### `DELETE /api/segments`
+Elimina un segmento.
+-   **Auth**: Requerida.
+-   **Request Body**: `{ "name": "string" }`
+-   **Descripción**: El backend debe eliminar el segmento de la lista y también de la propiedad `tags` de todos los clientes que lo tuvieran.
+-   **Success Response (204 No Content)**.
+
+#### `GET /api/reminder-rules`
+Obtiene todas las reglas de recordatorio automático.
+-   **Auth**: Requerida.
+-   **Success Response (200 OK)**: `[ReminderRule]`
+
+#### `POST /api/reminder-rules`
+Crea una nueva regla de recordatorio.
+-   **Auth**: Requerida.
+-   **Request Body**: `Omit<ReminderRule, 'id'>`
+-   **Success Response (201 Created)**: Objeto `ReminderRule` recién creado.
+
+#### `DELETE /api/reminder-rules/:id`
+Elimina una regla de recordatorio por su ID.
+-   **Auth**: Requerida.
+-   **Success Response (204 No Content)**.
+
+#### `POST /api/reminders/trigger-services`
+Simula un cron job para enviar recordatorios de servicios recurrentes.
+-   **Auth**: Requerida.
+-   **Descripción**: Itera sobre todas las reglas y clientes para ver si, según la fecha de su último servicio, les corresponde un recordatorio.
+-   **Success Response (200 OK)**:
+    ```json
+    {
+      "remindersSent": 5 // Número de recordatorios de servicio enviados
+    }
+    ```
+
+---
+
+### Reports & Stats
+
+#### `GET /api/stats/dashboard`
+Obtiene las estadísticas rápidas para el dashboard.
+-   **Auth**: Requerida.
+-   **Success Response (200 OK)**:
+    ```json
+    {
+      "upcomingAppointments": "number",
+      "newClientsThisMonth": "number",
+      "occupancyRate": "number" // Podría ser un cálculo más complejo en el backend
+    }
+    ```
+
+#### `GET /api/reports`
+Obtiene los datos consolidados para la página de informes, filtrados por fecha.
+-   **Auth**: Requerida.
+-   **Query Parameters**:
+    -   `range` (string): `1_week`, `1_month`, `6_months`, `1_year`, etc.
+-   **Success Response (200 OK)**:
+    ```json
+    {
+      "appointmentStatusData": [
+        { "name": "Confirmadas", "value": 150 },
+        { "name": "Canceladas", "value": 12 }
+      ],
+      "marketingCampaigns": [ /* Array de objetos Campaign */ ],
+      "reminderCampaigns": [ /* Array de objetos Campaign */ ]
+    }
+    ```
+
+---
+
+### Plans
+
+#### `GET /api/plans`
+Obtiene la lista de planes de suscripción disponibles.
+-   **Auth**: Requerida.
+-   **Success Response (200 OK)**: `[Plan]`
+```json
+[
+  {
+    "name": "Pro",
+    "price": 79,
+    "features": ["Citas ilimitadas", "..."],
+    "limits": { "appointments": "unlimited", "..." }
+  }
+]
+```
